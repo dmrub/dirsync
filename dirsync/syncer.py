@@ -28,6 +28,8 @@ import concurrent.futures
 from collections import namedtuple
 import threading
 
+CopyFileTask = namedtuple('CopyFileTask', ['filename', 'src_dir', 'target_dir'])
+
 MAX_WORKERS = 5
 try:
     import multiprocessing
@@ -116,6 +118,8 @@ class Syncer(object):
         self._parallel = get_option('parallel')
         self._executor = None
         self._future_to_task = {}
+        self._makedirs_lock = threading.Lock() if self._parallel else None
+
         if not os.path.isdir(self._dir1):
             raise ValueError("Error: Source directory does not exist.")
 
@@ -123,6 +127,16 @@ class Syncer(object):
             raise ValueError(
                 "Error: Target directory %s does not exist. "
                 "(Try the -c or --create option to create it)." % self._dir2)
+
+    def _makedirs(self, dir):
+        if self._parallel:
+            with self._makedirs_lock:
+                if not os.path.exists(dir):
+                    os.makedirs(dir)
+                    self._numnewdirs += 1
+        else:
+            os.makedirs(dir)
+            self._numnewdirs += 1
 
     def log(self, msg=''):
         self.logger.info(msg)
@@ -209,8 +223,7 @@ class Syncer(object):
                 if self._verbose:
                     self.log('Creating directory %s' % self._dir2)
                 try:
-                    os.makedirs(self._dir2)
-                    self._numnewdirs += 1
+                    self._makedirs(self._dir2)
                 except Exception as e:
                     self.log(str(e))
                     return None
@@ -224,10 +237,11 @@ class Syncer(object):
                     task = self._future_to_task[future]
                     try:
                         result = future.result()
-                    except Exception as exc:
-                        import traceback
-                        import sys
-                        print(traceback.format_exc(), file=sys.stderr)
+                    except Exception as e:
+                        self.log(str(e))
+                        #import traceback
+                        #import sys
+                        #print(traceback.format_exc(), file=sys.stderr)
 
             self._executor = None
         else:
@@ -283,13 +297,17 @@ class Syncer(object):
 
             if stat.S_ISREG(st.st_mode):
                 if copyfunc:
-                    copyfunc(f1, self._dir1, self._dir2)
+                    if self._executor is not None:
+                        task = CopyFileTask(f1, self._dir1, self._dir2)
+                        future = self._executor.submit(copyfunc, f1, self._dir1, self._dir2)
+                        self._future_to_task[future] = task
+                    else:
+                        copyfunc(f1, self._dir1, self._dir2)
                     self._added.append(os.path.join(self._dir2, f1))
             elif stat.S_ISDIR(st.st_mode):
                 to_make = os.path.join(self._dir2, f1)
                 if not os.path.exists(to_make):
-                    os.makedirs(to_make)
-                    self._numnewdirs += 1
+                    self._makedirs(to_make)
                     self._added.append(to_make)
 
         # common files/directories
@@ -301,12 +319,16 @@ class Syncer(object):
 
             if stat.S_ISREG(st.st_mode):
                 if updatefunc:
-                    updatefunc(f1, self._dir1, self._dir2)
+                    if self._executor is not None:
+                        task = CopyFileTask(f1, self._dir1, self._dir2)
+                        future = self._executor.submit(updatefunc, f1, self._dir1, self._dir2)
+                        self._future_to_task[future] = task
+                    else:
+                        updatefunc(f1, self._dir1, self._dir2)
             # nothing to do if we have a directory
 
     def _copy(self, filename, dir1, dir2):
         """ Private function for copying a file """
-
         # NOTE: dir1 is source & dir2 is target
         if self._copyfiles:
 
@@ -331,8 +353,7 @@ class Syncer(object):
                             # 1911 = 0o777
                             os.chmod(os.path.dirname(dir2_root), 1911)
                         try:
-                            os.makedirs(dir2)
-                            self._numnewdirs += 1
+                            self._makedirs(dir2)
                         except OSError as e:
                             self.log(str(e))
                             self._numdirsfld += 1
@@ -361,8 +382,7 @@ class Syncer(object):
                             os.chmod(os.path.dirname(self.dir1_root), 1911)
 
                         try:
-                            os.makedirs(dir1)
-                            self._numnewdirs += 1
+                            self._makedirs(dir1)
                         except OSError as e:
                             self.log(str(e))
                             self._numdirsfld += 1
