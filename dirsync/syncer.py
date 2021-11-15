@@ -24,7 +24,17 @@ import filecmp
 
 from .options import OPTIONS
 from .version import __pkg_name__
+import concurrent.futures
+from collections import namedtuple
+import threading
 
+MAX_WORKERS = 5
+try:
+    import multiprocessing
+
+    MAX_WORKERS = multiprocessing.cpu_count() * 5
+except (ImportError, NotImplementedError):
+    pass
 
 class DCMP(object):
     """Dummy object for directory comparison data storage"""
@@ -103,6 +113,9 @@ class Syncer(object):
         # not to be excluded
         self._exclude.append('^\.dirsync$')
 
+        self._parallel = get_option('parallel')
+        self._executor = None
+        self._future_to_task = {}
         if not os.path.isdir(self._dir1):
             raise ValueError("Error: Source directory does not exist.")
 
@@ -203,7 +216,22 @@ class Syncer(object):
                     return None
 
         # All right!
-        self._mainfunc()
+        if self._parallel:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                self._executor = executor
+                self._mainfunc()
+                for future in concurrent.futures.as_completed(self._future_to_task):
+                    task = self._future_to_task[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        import traceback
+                        import sys
+                        print(traceback.format_exc(), file=sys.stderr)
+
+            self._executor = None
+        else:
+            self._mainfunc()
         self._endtime = time.time()
 
     def _dowork(self, dir1, dir2, copyfunc=None, updatefunc=None):

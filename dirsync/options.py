@@ -110,6 +110,11 @@ options = (
         default=[],
         help='Patterns to ignore (no action)'
     ))),
+    ('parallel', ((), dict(
+        action='store_true',
+        default=False,
+        help='Copy files in parallel.'
+    ))),
 )
 
 
